@@ -312,7 +312,6 @@ class Trainer(DefaultTrainer):
 
         loss_distill = []
         #TODO: shape of logits for softmax
-        for 
         loss_distill.append(self.criterion_div_rpn(logits_t[0], logits_s[0]))
         loss_distill.append(self.criterion_div_roi_heads(logits_t[1], logits_s[1]))
         # loss_distill.append(self.criterion_mse_rpn(logits_t[1], logits_s[1]))
