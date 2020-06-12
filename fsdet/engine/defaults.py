@@ -97,6 +97,11 @@ def default_argument_parser():
         default=None,
         nargs=argparse.REMAINDER,
     )
+
+    # path to teacher model
+    parser.add_argument('--path_t', type=str, default=None, help='teacher model snapshot')
+    # KL distillation
+    parser.add_argument('--kd_T', type=float, default=4, help='temperature for KD distillation')
     return parser
 
 
