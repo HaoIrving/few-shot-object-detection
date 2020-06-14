@@ -1,7 +1,7 @@
 cd ..
 
 # g1_t4_lr002
-CUDA_VISIBLE_DEVICES=0,1,2,3 python tools/train_distillwogtroi.py --num-gpus 1 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tools/train_distillwogtroi.py --num-gpus 4 \
         --config-file configs/PascalVOC-detection/split1/faster_rcnn_R_101_FPN_base1.yaml \
         --path_t checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1/model_final.pth \
         --kd_T 4 \
