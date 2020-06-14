@@ -51,6 +51,12 @@ from fsdet.modeling import GeneralizedRCNN, detector_postprocess
 from fsdet.modeling import PROPOSAL_GENERATOR_REGISTRY
 from fsdet.modeling.proposal_generator.rpn import RPN
 from fsdet.modeling.proposal_generator.rpn_outputs import RPNOutputs, find_top_rpn_proposals
+from fsdet.layers import cat
+from fsdet.modeling.sampling import subsample_labels
+from fsdet.modeling.proposal_generator.rpn_outputs import rpn_losses
+from fsdet.utils.events import get_event_storage
+import numpy as np
+
 from fsdet.modeling import ROI_HEADS_REGISTRY
 from fsdet.modeling import StandardROIHeads
 from fsdet.modeling.roi_heads.fast_rcnn import FastRCNNOutputs
@@ -58,7 +64,7 @@ from fsdet.modeling.roi_heads.fast_rcnn import FastRCNNOutputs
 @META_ARCH_REGISTRY.register()
 class GeneralizedRCNN_distill(GeneralizedRCNN):
 
-    def forward(self, batched_inputs):
+    def forward(self, batched_inputs, roi_s=None, gt_objectness_logits_s=None):
         """
         For model_s forward.
 
@@ -66,7 +72,7 @@ class GeneralizedRCNN_distill(GeneralizedRCNN):
             logits, deltas and losses of RPN & ROIHeads.
         """
         if not self.training:
-            return self.inference(batched_inputs)
+            return self.inference(batched_inputs, roi_s)
 
         images = self.preprocess_image(batched_inputs)
         if "instances" in batched_inputs[0]:
@@ -82,27 +88,27 @@ class GeneralizedRCNN_distill(GeneralizedRCNN):
         features = self.backbone(images.tensor)
 
         if self.proposal_generator:
-            proposals, proposal_losses, pred_objectness_logits, _ = \
+            proposals, proposal_losses, gt_objectness_logits_s, pred_objectness_logits_s = \
                 self.proposal_generator(images, features, gt_instances)
         else:
             assert "proposals" in batched_inputs[0]
             proposals = [x["proposals"].to(self.device) for x in batched_inputs]
             proposal_losses = {}
 
-        _, detector_losses, pred_class_logits, _ = self.roi_heads(images, features, proposals, gt_instances)
+        _, detector_losses, pred_class_logits_s, _, roi_s = self.roi_heads(images, features, proposals, gt_instances)
 
         losses = {}
         losses.update(detector_losses)
         losses.update(proposal_losses)
         
         logits_s = []
-        logits_s.append(pred_objectness_logits)
+        logits_s.append(pred_objectness_logits_s)
         # logits_s.append(pred_anchor_deltas)
-        logits_s.append(pred_class_logits)
+        logits_s.append(pred_class_logits_s)
         # logits_s.append(pred_proposal_deltas)
-        return losses, logits_s
+        return losses, logits_s, roi_s, gt_objectness_logits_s
 
-    def inference(self, batched_inputs, detected_instances=None, do_postprocess=True):
+    def inference(self, batched_inputs, roi_s=None, detected_instances=None, do_postprocess=True):
         """
         For model_t forward.
 
@@ -116,33 +122,36 @@ class GeneralizedRCNN_distill(GeneralizedRCNN):
 
         if detected_instances is None:
             if self.proposal_generator:
-                proposals, _, pred_objectness_logits, _ = self.proposal_generator(images, features, None)
+                proposals, losses, pred_objectness_logits_t = self.proposal_generator(images, features, None)
             else:
                 assert "proposals" in batched_inputs[0]
                 proposals = [x["proposals"].to(self.device) for x in batched_inputs]
 
-            results, pred_class_logits, _ = self.roi_heads(images, features, proposals, None)
+            results, pred_class_logits, _ = self.roi_heads(images, features, proposals, None, roi_s)
         else:
             detected_instances = [x.to(self.device) for x in detected_instances]
             results = self.roi_heads.forward_with_given_boxes(features, detected_instances)
 
         logits_t = []
-        logits_t.append(pred_objectness_logits)
+        logits_t.append(pred_objectness_logits_t)
         # logits_t.append(pred_anchor_deltas)
         logits_t.append(pred_class_logits)
         # logits_t.append(pred_proposal_deltas)
 
-        if do_postprocess:
-            processed_results = []
-            for results_per_image, input_per_image, image_size in zip(
-                results, batched_inputs, images.image_sizes
-            ):
-                height = input_per_image.get("height", image_size[0])
-                width = input_per_image.get("width", image_size[1])
-                r = detector_postprocess(results_per_image, height, width)
-                processed_results.append({"instances": r})
-            return processed_results,logits_t
-        else:
+        if roi_s is None: # not do distill when infering
+            if do_postprocess:
+                processed_results = []
+                for results_per_image, input_per_image, image_size in zip(
+                    results, batched_inputs, images.image_sizes
+                ):
+                    height = input_per_image.get("height", image_size[0])
+                    width = input_per_image.get("width", image_size[1])
+                    r = detector_postprocess(results_per_image, height, width)
+                    processed_results.append({"instances": r})
+                return processed_results
+            else:
+                return results
+        else: # do distill when infering
             return results, logits_t
 
 
@@ -157,7 +166,7 @@ class RPN_distill(RPN):
         anchors = self.anchor_generator(features)
         # TODO: The anchors only depend on the feature map shape; there's probably
         # an opportunity for some optimizations (e.g., caching anchors).
-        outputs = RPNOutputs(
+        outputs = RPNOutputs_distill(
             self.box2box_transform,
             self.anchor_matcher,
             self.batch_size_per_image,
@@ -172,9 +181,19 @@ class RPN_distill(RPN):
         )
 
         if self.training:
-            losses = {k: v * self.loss_weight for k, v in outputs.losses().items()}
+            losses, gt_objectness_logits_s, pred_objectness_logits_s = outputs.losses()
+            losses = {k: v * self.loss_weight for k, v in losses.items()}
         else:
             losses = {}
+            pred_objectness_logits_t = cat(
+                [
+                    # Reshape: (N, A, Hi, Wi) -> (N, Hi, Wi, A) -> (N*Hi*Wi*A, )
+                    x.permute(0, 2, 3, 1).flatten()
+                    for x in pred_objectness_logits
+                ],
+                dim=0,
+            )
+
 
         with torch.no_grad():
             # Find the top proposals by applying NMS and removing boxes that
@@ -198,13 +217,117 @@ class RPN_distill(RPN):
             # and this sorting is actually not needed. But the cost is negligible.
             inds = [p.objectness_logits.sort(descending=True)[1] for p in proposals]
             proposals = [p[ind] for p, ind in zip(proposals, inds)]
+        if self.training:
+            return proposals, losses, gt_objectness_logits_s, pred_objectness_logits_s
+        else:
+            return proposals, losses, pred_objectness_logits_t
 
-        return proposals, losses, pred_objectness_logits, pred_anchor_deltas
+class RPNOutputs_distill(RPNOutputs):
+    def losses(self):
+        """
+        Return the losses from a set of RPN predictions and their associated ground-truth.
+
+        Returns:
+            dict[loss name -> loss value]: A dict mapping from loss name to loss value.
+                Loss names are: `loss_rpn_cls` for objectness classification and
+                `loss_rpn_loc` for proposal localization.
+        """
+
+        def resample(label):
+            """
+            Randomly sample a subset of positive and negative examples by overwriting
+            the label vector to the ignore value (-1) for all elements that are not
+            included in the sample.
+            """
+            pos_idx, neg_idx = subsample_labels(
+                label, self.batch_size_per_image, self.positive_fraction, 0
+            )
+            # Fill with the ignore label (-1), then set positive and negative labels
+            label.fill_(-1)
+            label.scatter_(0, pos_idx, 1)
+            label.scatter_(0, neg_idx, 0)
+            return label
+
+        gt_objectness_logits, gt_anchor_deltas = self._get_ground_truth()
+        """
+        gt_objectness_logits: list of N tensors. Tensor i is a vector whose length is the
+            total number of anchors in image i (i.e., len(anchors[i]))
+        gt_anchor_deltas: list of N tensors. Tensor i has shape (len(anchors[i]), B),
+            where B is the box dimension
+        """
+        # Collect all objectness labels and delta targets over feature maps and images
+        # The final ordering is L, N, H, W, A from slowest to fastest axis.
+        num_anchors_per_map = [np.prod(x.shape[1:]) for x in self.pred_objectness_logits]
+        num_anchors_per_image = sum(num_anchors_per_map)
+
+        # Stack to: (N, num_anchors_per_image)
+        gt_objectness_logits = torch.stack(
+            [resample(label) for label in gt_objectness_logits], dim=0
+        )
+
+        # Log the number of positive/negative anchors per-image that's used in training
+        num_pos_anchors = (gt_objectness_logits == 1).sum().item()
+        num_neg_anchors = (gt_objectness_logits == 0).sum().item()
+        storage = get_event_storage()
+        storage.put_scalar("rpn/num_pos_anchors", num_pos_anchors / self.num_images)
+        storage.put_scalar("rpn/num_neg_anchors", num_neg_anchors / self.num_images)
+
+        assert gt_objectness_logits.shape[1] == num_anchors_per_image
+        # Split to tuple of L tensors, each with shape (N, num_anchors_per_map)
+        gt_objectness_logits = torch.split(gt_objectness_logits, num_anchors_per_map, dim=1)
+        # Concat from all feature maps
+        gt_objectness_logits = cat([x.flatten() for x in gt_objectness_logits], dim=0)
+
+        # Stack to: (N, num_anchors_per_image, B)
+        gt_anchor_deltas = torch.stack(gt_anchor_deltas, dim=0)
+        assert gt_anchor_deltas.shape[1] == num_anchors_per_image
+        B = gt_anchor_deltas.shape[2]  # box dimension (4 or 5)
+
+        # Split to tuple of L tensors, each with shape (N, num_anchors_per_image)
+        gt_anchor_deltas = torch.split(gt_anchor_deltas, num_anchors_per_map, dim=1)
+        # Concat from all feature maps
+        gt_anchor_deltas = cat([x.reshape(-1, B) for x in gt_anchor_deltas], dim=0)
+
+        # Collect all objectness logits and delta predictions over feature maps
+        # and images to arrive at the same shape as the labels and targets
+        # The final ordering is L, N, H, W, A from slowest to fastest axis.
+        pred_objectness_logits = cat(
+            [
+                # Reshape: (N, A, Hi, Wi) -> (N, Hi, Wi, A) -> (N*Hi*Wi*A, )
+                x.permute(0, 2, 3, 1).flatten()
+                for x in self.pred_objectness_logits
+            ],
+            dim=0,
+        )
+        pred_anchor_deltas = cat(
+            [
+                # Reshape: (N, A*B, Hi, Wi) -> (N, A, B, Hi, Wi) -> (N, Hi, Wi, A, B)
+                #          -> (N*Hi*Wi*A, B)
+                x.view(x.shape[0], -1, B, x.shape[-2], x.shape[-1])
+                .permute(0, 3, 4, 1, 2)
+                .reshape(-1, B)
+                for x in self.pred_anchor_deltas
+            ],
+            dim=0,
+        )
+
+        objectness_loss, localization_loss = rpn_losses(
+            gt_objectness_logits,
+            gt_anchor_deltas,
+            pred_objectness_logits,
+            pred_anchor_deltas,
+            self.smooth_l1_beta,
+        )
+        normalizer = 1.0 / (self.batch_size_per_image * self.num_images)
+        loss_cls = objectness_loss * normalizer  # cls: classification loss
+        loss_loc = localization_loss * normalizer  # loc: localization loss
+        losses = {"loss_rpn_cls": loss_cls, "loss_rpn_loc": loss_loc}
+        return losses, gt_objectness_logits, pred_objectness_logits
 
 @ROI_HEADS_REGISTRY.register()
 class StandardROIHeads_distill(StandardROIHeads):
 
-    def forward(self, images, features, proposals, targets=None):
+    def forward(self, images, features, proposals, targets=None, roi_s=None):
         """
         See :class:`ROIHeads.forward`.
         """
@@ -216,13 +339,13 @@ class StandardROIHeads_distill(StandardROIHeads):
         features_list = [features[f] for f in self.in_features]
 
         if self.training:
-            losses, pred_class_logits, pred_proposal_deltas = self._forward_box(features_list, proposals)
-            return proposals, losses, pred_class_logits, pred_proposal_deltas
+            losses, pred_class_logits, pred_proposal_deltas, roi_s = self._forward_box(features_list, proposals)
+            return proposals, losses, pred_class_logits, pred_proposal_deltas, roi_s
         else:
-            pred_instances, pred_class_logits, pred_proposal_deltas = self._forward_box(features_list, proposals)
+            pred_instances, pred_class_logits, pred_proposal_deltas = self._forward_box(features_list, proposals, roi_s)
             return pred_instances, pred_class_logits, pred_proposal_deltas
     
-    def _forward_box(self, features, proposals):
+    def _forward_box(self, features, proposals, roi_stud=None):
         """
         Forward logic of the box prediction branch.
 
@@ -237,9 +360,19 @@ class StandardROIHeads_distill(StandardROIHeads):
             In training, a dict of losses.
             In inference, a list of `Instances`, the predicted instances.
         """
-        box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
-        box_features = self.box_head(box_features)
-        pred_class_logits, pred_proposal_deltas = self.box_predictor(box_features)
+        if self.training:
+            box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
+            roi_s = box_features # 512/img when training, 1000 when testing
+            box_features = self.box_head(box_features)
+            pred_class_logits, pred_proposal_deltas = self.box_predictor(box_features)
+        else:
+            if roi_stud is None:
+                box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
+                box_features = self.box_head(box_features)
+                pred_class_logits, pred_proposal_deltas = self.box_predictor(box_features)
+            else:
+                box_features = self.box_head(roi_stud)
+                pred_class_logits, pred_proposal_deltas = self.box_predictor(box_features)
         del box_features
 
         outputs = FastRCNNOutputs(
@@ -250,11 +383,14 @@ class StandardROIHeads_distill(StandardROIHeads):
             self.smooth_l1_beta,
         )
         if self.training:
-            return outputs.losses(), pred_class_logits, pred_proposal_deltas
+            return outputs.losses(), pred_class_logits, pred_proposal_deltas, roi_s
         else:
-            pred_instances, _ = outputs.inference(
-                self.test_score_thresh, self.test_nms_thresh, self.test_detections_per_img
-            )
+            if roi_stud is None:
+                pred_instances, _ = outputs.inference(
+                    self.test_score_thresh, self.test_nms_thresh, self.test_detections_per_img
+                )
+            else:
+                pred_instances = {}
             return pred_instances, pred_class_logits, pred_proposal_deltas
 
 class DistillKL(nn.Module):
@@ -266,7 +402,7 @@ class DistillKL(nn.Module):
     def forward(self, y_s, y_t):
         p_s = F.log_softmax(y_s/self.T, dim=1)
         p_t = F.softmax(y_t/self.T, dim=1)
-        loss = F.kl_div(p_s, p_t, size_average=False) * (self.T**2) / y_s.shape[0]
+        loss = F.kl_div(p_s, p_t, reduction='sum') * (self.T**2) / y_s.shape[0]
         return loss
 
 class HintLoss(nn.Module):
@@ -294,33 +430,41 @@ class Trainer(DefaultTrainer):
         self.check_pointer_t = DetectionCheckpointer(
             self.model_t, save_dir=cfg.OUTPUT_DIR)
 
-        self.criterion_div_rpn = DistillKL(kd_T) # TODO: grid search, LWF
-        self.criterion_div_roi_heads = DistillKL(kd_T)
-        self.criterion_mse_rpn = HintLoss()
-        self.criterion_mse_roi_heads = HintLoss()
+        self.criterion_div_rpn = HintLoss()
+        self.criterion_div_roi_heads = DistillKL(kd_T)# TODO: grid search, LWF
+        # self.criterion_mse_rpn = HintLoss()
+        # self.criterion_mse_roi_heads = HintLoss()
         if torch.cuda.is_available():
             self.criterion_div_rpn.cuda()
             self.criterion_div_roi_heads.cuda()
-            self.criterion_mse_rpn.cuda()
-            self.criterion_mse_roi_heads.cuda()
+            # self.criterion_mse_rpn.cuda()
+            # self.criterion_mse_roi_heads.cuda()
 
     def distill(self, data):
-        loss_origin, logits_s = self.model(data)
+        loss_origin, logits_s, roi_s, gt_objectness_logits_s = self.model(data)
 
         with torch.no_grad():
-            _, logits_t = self.model_t(data)
-
-        loss_distill = []
+            _, logits_t = self.model_t(data, roi_s)
+        '''
+        logits_t.append(pred_objectness_logits_t)
+        logits_t.append(pred_class_logits)
+        
+        logits_s.append(pred_objectness_logits_s)
+        logits_s.append(pred_class_logits_s)
+        '''
         #TODO: shape of logits for softmax
-        loss_distill.append(self.criterion_div_rpn(logits_t[0], logits_s[0]))
-        loss_distill.append(self.criterion_div_roi_heads(logits_t[1], logits_s[1]))
-        # loss_distill.append(self.criterion_mse_rpn(logits_t[1], logits_s[1]))
-        # loss_distill.append(self.criterion_mse_roi_heads(logits_t[3], logits_s[3]))
+        valid_masks = gt_objectness_logits_s >= 0
+        criterion_div_rpn = self.criterion_div_rpn(logits_s[0][valid_masks], logits_t[0][valid_masks])
+        criterion_div_roi_heads = self.criterion_div_roi_heads(logits_s[1], logits_t[1])
+        loss_distill = {
+            "loss_distill_rpn": criterion_div_rpn, 
+            "loss_distill_roiheads": criterion_div_roi_heads
+            }
 
         loss_dict = {}
         loss_dict.update(loss_origin)
         #TODO: alpha = beta = 1, weights of loss_origin & loss_distill
-        loss_dict.update(dict(loss_distill=sum(loss_distill)))
+        loss_dict.update(loss_distill)
         return loss_dict
 
     def run_step(self):
@@ -378,59 +522,6 @@ class Trainer(DefaultTrainer):
         )
 
     @classmethod
-    def test(cls, cfg, model, evaluators=None):
-        """
-        Args:
-            cfg (CfgNode):
-            model (nn.Module):
-            evaluators (list[DatasetEvaluator] or None): if None, will call
-                :meth:`build_evaluator`. Otherwise, must have the same length as
-                `cfg.DATASETS.TEST`.
-
-        Returns:
-            dict: a dict of result metrics
-        """
-        logger = logging.getLogger(__name__)
-        if isinstance(evaluators, DatasetEvaluator):
-            evaluators = [evaluators]
-        if evaluators is not None:
-            assert len(cfg.DATASETS.TEST) == len(evaluators), "{} != {}".format(
-                len(cfg.DATASETS.TEST), len(evaluators)
-            )
-
-        results = OrderedDict()
-        for idx, dataset_name in enumerate(cfg.DATASETS.TEST):
-            data_loader = cls.build_test_loader(cfg, dataset_name)
-            # When evaluators are passed in as arguments,
-            # implicitly assume that evaluators can be created before data_loader.
-            if evaluators is not None:
-                evaluator = evaluators[idx]
-            else:
-                try:
-                    evaluator = cls.build_evaluator(cfg, dataset_name)
-                except NotImplementedError:
-                    logger.warn(
-                        "No evaluator found. Use `DefaultTrainer.test(evaluators=)`, "
-                        "or implement its `build_evaluator` method."
-                    )
-                    results[dataset_name] = {}
-                    continue
-            results_i = inference_on_dataset(model, data_loader, evaluator)
-            results[dataset_name] = results_i
-            if comm.is_main_process():
-                assert isinstance(
-                    results_i, dict
-                ), "Evaluator must return a dict on the main process. Got {} instead.".format(
-                    results_i
-                )
-                logger.info("Evaluation results for {} in csv format:".format(dataset_name))
-                print_csv_format(results_i)
-
-        if len(results) == 1:
-            results = list(results.values())[0]
-        return results
-
-    @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
         """
         Create evaluator(s) for a given dataset.
@@ -457,84 +548,6 @@ class Trainer(DefaultTrainer):
         if len(evaluator_list) == 1:
             return evaluator_list[0]
         return DatasetEvaluators(evaluator_list)
-
-def inference_on_dataset(model, data_loader, evaluator):
-    """
-    Run model on the data_loader and evaluate the metrics with evaluator.
-    The model will be used in eval mode.
-
-    Args:
-        model (nn.Module): a module which accepts an object from
-            `data_loader` and returns some outputs. It will be temporarily set to `eval` mode.
-
-            If you wish to evaluate a model in `training` mode instead, you can
-            wrap the given model and override its behavior of `.eval()` and `.train()`.
-        data_loader: an iterable object with a length.
-            The elements it generates will be the inputs to the model.
-        evaluator (DatasetEvaluator): the evaluator to run. Use
-            :class:`DatasetEvaluators([])` if you only want to benchmark, but
-            don't want to do any evaluation.
-
-    Returns:
-        The return value of `evaluator.evaluate()`
-    """
-    num_devices = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
-    logger = logging.getLogger(__name__)
-    logger.info("Start inference on {} images".format(len(data_loader)))
-
-    total = len(data_loader)  # inference data loader must have a fixed length
-    evaluator.reset()
-
-    logging_interval = 50
-    num_warmup = min(5, logging_interval - 1, total - 1)
-    start_time = time.time()
-    total_compute_time = 0
-    with inference_context(model), torch.no_grad():
-        for idx, inputs in enumerate(data_loader):
-            if idx == num_warmup:
-                start_time = time.time()
-                total_compute_time = 0
-
-            start_compute_time = time.time()
-            outputs, _ = model(inputs)
-            torch.cuda.synchronize()
-            total_compute_time += time.time() - start_compute_time
-            evaluator.process(inputs, outputs)
-
-            if (idx + 1) % logging_interval == 0:
-                duration = time.time() - start_time
-                seconds_per_img = duration / (idx + 1 - num_warmup)
-                eta = datetime.timedelta(
-                    seconds=int(seconds_per_img * (total - num_warmup) - duration)
-                )
-                logger.info(
-                    "Inference done {}/{}. {:.4f} s / img. ETA={}".format(
-                        idx + 1, total, seconds_per_img, str(eta)
-                    )
-                )
-
-    # Measure the time only for this worker (before the synchronization barrier)
-    total_time = int(time.time() - start_time)
-    total_time_str = str(datetime.timedelta(seconds=total_time))
-    # NOTE this format is parsed by grep
-    logger.info(
-        "Total inference time: {} ({:.6f} s / img per device, on {} devices)".format(
-            total_time_str, total_time / (total - num_warmup), num_devices
-        )
-    )
-    total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
-    logger.info(
-        "Total inference pure compute time: {} ({:.6f} s / img per device, on {} devices)".format(
-            total_compute_time_str, total_compute_time / (total - num_warmup), num_devices
-        )
-    )
-
-    results = evaluator.evaluate()
-    # An evaluator may return None when not in main process.
-    # Replace it by an empty dict instead to make it easier for downstream code to handle
-    if results is None:
-        results = {}
-    return results
 
 def setup(args):
     """
@@ -578,10 +591,10 @@ def main(args):
     trainer.check_pointer_t._load_model(trainer.check_pointer_t._load_file(ckpt))
     print('load model teacher checkpoint {}'.format(ckpt))
 
-    # validate teacher AP
-    res = Trainer.test(cfg, trainer.model_t)
-    if comm.is_main_process():
-        verify_results(cfg, res)
+    # # validate teacher AP
+    # res = Trainer.test(cfg, trainer.model_t)
+    # if comm.is_main_process():
+    #     verify_results(cfg, res)
     
     trainer.resume_or_load(resume=args.resume)
     return trainer.train()
