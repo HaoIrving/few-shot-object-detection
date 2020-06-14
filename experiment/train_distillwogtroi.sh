@@ -1,5 +1,4 @@
 cd ..
-cd tools
 
 # g1_t4_lr002
 CUDA_VISIBLE_DEVICES=0 python tools/train_distillwogtroi.py --num-gpus 1 \
