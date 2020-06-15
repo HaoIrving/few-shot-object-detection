@@ -401,8 +401,8 @@ class DistillKL(nn.Module):
 
     def forward(self, y_s, y_t, normalizer=1):
         if len(y_s.shape) == 1:
-            p_s = F.log_softmax(y_s/self.T, dim=0)
-            p_t = F.softmax(y_t/self.T, dim=0)
+            p_s = F.logsigmoid(y_s)
+            p_t = torch.sigmoid(y_t)
             loss = F.kl_div(p_s, p_t, reduction='sum') * (self.T**2) * normalizer
         else:
             p_s = F.log_softmax(y_s/self.T, dim=1)
