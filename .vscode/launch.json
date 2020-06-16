@@ -16,7 +16,7 @@
         "--path_t", "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1/model_final.pth",
         "--kd_T", "4" ,
         "OUTPUT_DIR", "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1_distill_wogtroi_g1" ,
-"SOLVER.IMS_PER_BATCH", "1", "SOLVER.BASE_LR", "0.00025", "SOLVER.STEPS", "(96000, 128000)", "SOLVER.MAX_ITER", "100", "SOLVER.WARMUP_ITERS", "800",
+"SOLVER.IMS_PER_BATCH", "1", "SOLVER.BASE_LR", "0.00025", "SOLVER.STEPS", "(96000, 128000)", "SOLVER.MAX_ITER", "200", "SOLVER.WARMUP_ITERS", "800",
             ]
         }
     ]
