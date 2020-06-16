@@ -24,7 +24,6 @@ import logging
 from fsdet.utils.logger import log_first_n
 from collections import OrderedDict
 import datetime
-from tensorboardX import SummaryWriter
 
 import fsdet.utils.comm as comm
 from fsdet.checkpoint import DetectionCheckpointer
