@@ -24,7 +24,7 @@ import logging
 from fsdet.utils.logger import log_first_n
 from collections import OrderedDict
 import datetime
-
+from tensorboardX import SummaryWriter
 
 import fsdet.utils.comm as comm
 from fsdet.checkpoint import DetectionCheckpointer
@@ -399,10 +399,22 @@ class DistillKL(nn.Module):
         super(DistillKL, self).__init__()
         self.T = T
 
+    def get_pdf(self, x, log=False):
+        assert len(x.shape) == 1
+        if log:                
+            p_1 = F.logsigmoid(x)
+            p_2 = p_1 - x # log(1-sigmoid(x)) = logsigmoid(x) - x
+            p = cat([p_1.unsqueeze(1), p_2.unsqueeze(1)], dim=1)
+        else:
+            p_1 = torch.sigmoid(x)
+            p_2 = 1 - p_1 # log(1-sigmoid(x)) = logsigmoid(x) - x
+            p = cat([p_1.unsqueeze(1), p_2.unsqueeze(1)], dim=1)
+        return p
+
     def forward(self, y_s, y_t, normalizer=1):
         if len(y_s.shape) == 1:
-            p_s = F.logsigmoid(y_s)
-            p_t = torch.sigmoid(y_t)
+            p_s = self.get_pdf(y_s/self.T, log=True)
+            p_t = self.get_pdf(y_t/self.T, log=False)
             loss = F.kl_div(p_s, p_t, reduction='sum') * (self.T**2) * normalizer
         else:
             p_s = F.log_softmax(y_s/self.T, dim=1)
@@ -447,7 +459,7 @@ class Trainer(DefaultTrainer):
 
         with torch.no_grad():
             _, logits_t = self.model_t(data, roi_s)
-        '''
+        ''''
         logits_t.append(pred_objectness_logits_t)
         logits_t.append(pred_class_logits)
         
