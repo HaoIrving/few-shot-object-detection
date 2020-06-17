@@ -458,13 +458,6 @@ class Trainer(DefaultTrainer):
 
         with torch.no_grad():
             _, logits_t = self.model_t(data, roi_s)
-        ''''
-        logits_t.append(pred_objectness_logits_t)
-        logits_t.append(pred_class_logits)
-        
-        logits_s.append(pred_objectness_logits_s)
-        logits_s.append(pred_class_logits_s)
-        '''
         #TODO: shape of logits for softmax
         valid_masks = gt_objectness_logits_s >= 0
         criterion_kd_rpn = self.criterion_kd_rpn(logits_s[0][valid_masks], logits_t[0][valid_masks], normalizer)
