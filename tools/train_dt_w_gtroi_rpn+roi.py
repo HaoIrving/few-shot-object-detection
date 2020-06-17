@@ -94,7 +94,7 @@ class GeneralizedRCNN_distill(GeneralizedRCNN):
             proposals = [x["proposals"].to(self.device) for x in batched_inputs]
             proposal_losses = {}
 
-        _, detector_losses, pred_class_logits_gt_s = self.roi_heads(images, features, proposals, gt_instances)
+        _, detector_losses, pred_class_logits_gt_s = self.roi_heads(images, features, proposals, gt_instances, is_distill)
 
         losses = {}
         losses.update(detector_losses)
@@ -121,12 +121,14 @@ class GeneralizedRCNN_distill(GeneralizedRCNN):
                 assert "proposals" in batched_inputs[0]
                 proposals = [x["proposals"].to(self.device) for x in batched_inputs]
 
-            results, pred_class_logits_gt_t = self.roi_heads(images, features, proposals, gt_instances)
+            results, pred_class_logits_gt_t = self.roi_heads(images, features, proposals, gt_instances, is_distill)
         else:
             detected_instances = [x.to(self.device) for x in detected_instances]
             results = self.roi_heads.forward_with_given_boxes(features, detected_instances)
 
-        if not is_distill: # not do distill when infering
+        if is_distill: # do distill when infering
+            return pred_objectness_logits_t, pred_class_logits_gt_t
+        else: # not do distill when infering after training
             if do_postprocess:
                 processed_results = []
                 for results_per_image, input_per_image, image_size in zip(
@@ -139,9 +141,6 @@ class GeneralizedRCNN_distill(GeneralizedRCNN):
                 return processed_results
             else:
                 return results
-        else: # do distill when infering
-            return pred_objectness_logits_t, pred_class_logits_gt_t
-
 
 @PROPOSAL_GENERATOR_REGISTRY.register()
 class RPN_distill(RPN):
@@ -313,7 +312,7 @@ class RPNOutputs_distill(RPNOutputs):
 @ROI_HEADS_REGISTRY.register()
 class StandardROIHeads_distill(StandardROIHeads):
 
-    def forward(self, images, features, proposals, targets=None):
+    def forward(self, images, features, proposals, targets=None, is_distill=False):
         """
         See :class:`ROIHeads.forward`.
         """
@@ -324,15 +323,15 @@ class StandardROIHeads_distill(StandardROIHeads):
         features_list = [features[f] for f in self.in_features]
 
         if self.training:
-            losses, pred_class_logits_gt_s = self._forward_box(features_list, proposals, targets)
+            losses, pred_class_logits_gt_s = self._forward_box(features_list, proposals, targets, is_distill)
             del targets
             return proposals, losses, pred_class_logits_gt_s
         else:
-            pred_instances, pred_class_logits_gt_t = self._forward_box(features_list, proposals, targets)
+            pred_instances, pred_class_logits_gt_t = self._forward_box(features_list, proposals, targets, is_distill)
             del targets
             return pred_instances, pred_class_logits_gt_t
     
-    def _forward_box(self, features, proposals, targets=None):
+    def _forward_box(self, features, proposals, targets=None, is_distill=False):
         """
         Forward logic of the box prediction branch.
 
@@ -350,12 +349,12 @@ class StandardROIHeads_distill(StandardROIHeads):
         box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
         box_features = self.box_head(box_features)
         pred_class_logits, pred_proposal_deltas = self.box_predictor(box_features)
-        
-        box_features_gt = self.box_pooler(features, targets)
-        box_features_gt = self.box_head(box_features_gt)
-        pred_class_logits_gt, _ = self.box_predictor(box_features_gt)
         del box_features
-        del box_features_gt
+        if is_distill:
+            box_features_gt = self.box_pooler(features, [x.gt_boxes for x in targets])
+            box_features_gt = self.box_head(box_features_gt)
+            pred_class_logits_gt, _ = self.box_predictor(box_features_gt)
+            del box_features_gt
 
         outputs = FastRCNNOutputs(
             self.box2box_transform,
@@ -365,12 +364,16 @@ class StandardROIHeads_distill(StandardROIHeads):
             self.smooth_l1_beta,
         )
         if self.training:
+            assert is_distill
             return outputs.losses(), pred_class_logits_gt
         else:
             pred_instances, _ = outputs.inference(
                 self.test_score_thresh, self.test_nms_thresh, self.test_detections_per_img
             )
-            return pred_instances, pred_class_logits_gt
+            if is_distill:
+                return pred_instances, pred_class_logits_gt
+            else:
+                return pred_instances, {}
 
 class DistillKL(nn.Module):
     """KL divergence for distillation"""
@@ -434,7 +437,7 @@ class Trainer(DefaultTrainer):
 
     def distill(self, data):
         # normalizer = 1.0 / (self.batch_size_per_image * self.num_images)
-        loss_origin, gt_objectness_logits_s, pred_objectness_logits_s, normalizer, pred_class_logits_gt_s = self.model(data)
+        loss_origin, gt_objectness_logits_s, pred_objectness_logits_s, normalizer, pred_class_logits_gt_s = self.model(data, is_distill=True)
 
         with torch.no_grad():
             pred_objectness_logits_t, pred_class_logits_gt_t = self.model_t(data, is_distill=True)
