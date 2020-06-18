@@ -1,7 +1,7 @@
 cd ..
 
 # TODO: check every time
-# rm -rf checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1_dt_w_gtroi_rpn+roi_g1_t4_lr005
+rm -rf checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1_dt_w_gtroi_rpn_roi_g1_t4_lr003_3e4
 
 # g1_t4_lr002
 CUDA_VISIBLE_DEVICES=0,1 python tools/train_dt_w_gtroi_rpn_roi.py --num-gpus 2 \
