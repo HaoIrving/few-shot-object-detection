@@ -41,6 +41,7 @@ from fsdet.evaluation import (
     PascalVOCDetectionEvaluator,
     verify_results,
 )
+from tools import GeneralizedRCNN_distill, RPN_distill, StandardROIHeads_distill
 
 
 class Trainer(DefaultTrainer):
