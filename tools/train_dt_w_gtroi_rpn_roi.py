@@ -411,7 +411,7 @@ class HintLoss(nn.Module):
         self.crit = nn.MSELoss(reduction='sum')
 
     def forward(self, f_s, f_t, normalizer=0):
-        if len(y_s.shape) == 1:
+        if len(f_s.shape) == 1:
             loss = self.crit(f_s, f_t) * normalizer
         else:
             loss = self.crit(f_s, f_t) / f_s.shape[0]
