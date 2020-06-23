@@ -14,7 +14,7 @@ Therefore, we recommend you to use FsDet as an library and take
 this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
 """
-import pdb
+
 import os
 import torch
 import torch.nn as nn
@@ -411,7 +411,7 @@ class HintLoss(nn.Module):
         self.crit = nn.MSELoss(reduction='sum')
 
     def forward(self, f_s, f_t, normalizer=0):
-        if len(f_s.shape) == 1:
+        if len(y_s.shape) == 1:
             loss = self.crit(f_s, f_t) * normalizer
         else:
             loss = self.crit(f_s, f_t) / f_s.shape[0]
@@ -447,7 +447,6 @@ class Trainer(DefaultTrainer):
             pred_objectness_logits_t, pred_class_logits_gt_t = self.model_t(data, is_distill=True)
         #TODO: shape of logits for softmax
         valid_masks = gt_objectness_logits_s >= 0
-        pdb.set_trace()
         criterion_kd_rpn = self.criterion_kd_rpn(pred_objectness_logits_s[valid_masks], pred_objectness_logits_t[valid_masks], normalizer)
         criterion_kd_roi_heads = self.criterion_kd_roi_heads(pred_class_logits_gt_s, pred_class_logits_gt_t)
         loss_distill = {
