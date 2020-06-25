@@ -433,7 +433,7 @@ class Trainer(DefaultTrainer):
             self.model_t, save_dir=cfg.OUTPUT_DIR)
 
         # self.criterion_kd_rpn = HintLoss()
-        self.criterion_kd_rpn = DistillKL(kd_T))
+        self.criterion_kd_rpn = DistillKL(kd_T)
         self.criterion_kd_roi_heads = DistillKL(kd_T)# TODO: grid search, LWF
         # self.criterion_kd_roi_heads = HintLoss()
         if torch.cuda.is_available():
