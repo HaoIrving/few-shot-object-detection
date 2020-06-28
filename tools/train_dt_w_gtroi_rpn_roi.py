@@ -452,7 +452,7 @@ class Trainer(DefaultTrainer):
         criterion_kd_roi_heads = self.criterion_kd_roi_heads(pred_class_logits_gt_s, pred_class_logits_gt_t)
         loss_distill = {
             "loss_distill_rpn": criterion_kd_rpn / 10, 
-            "loss_distill_roiheads": criterion_kd_roi_heads / 10
+            "loss_distill_roiheads": criterion_kd_roi_heads / 100
             }
 
         loss_dict = {}
