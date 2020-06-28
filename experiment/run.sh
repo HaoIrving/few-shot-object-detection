@@ -19,4 +19,4 @@ cp -r ./checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1_dt_w_gtroi_rpn_t
 # test to check overfitting
 CUDA_VISIBLE_DEVICES=0,1,2,3 python tools/test_net.py --num-gpus 4 \
         --config-file checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1_dt_w_gtroi_rpn_t4_roi_t4_g1_lr02_2e4/config.yaml \
-        --eval-all --start-iter 17999
+        --eval-all --start-iter 14999
