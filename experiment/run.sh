@@ -33,6 +33,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tools/train_dt_w_gtroi_rpn_roi.py --num-gpus
 # cp -r ./checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1_dt_w_gtroi_rpn_100mse_roi_100t4_g2_lr02_2e4/ ~/Tensorboard
 
 # test to check overfitting
-CUDA_VISIBLE_DEVICES=0,1,2,3 python tools/test_net.py --num-gpus 4 \
-        --config-file checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1_dt_w_gtroi_rpn_100mse_roi_100t4_g3_lr02_2e4/config.yaml \
-        --eval-all --start-iter 14999
+# CUDA_VISIBLE_DEVICES=0,1,2,3 python tools/test_net.py --num-gpus 4 \
+#         --config-file checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1_dt_w_gtroi_rpn_100mse_roi_100t4_g3_lr02_2e4/config.yaml \
+#         --eval-all --start-iter 14999
