@@ -442,12 +442,12 @@ class Trainer(DefaultTrainer):
         with torch.no_grad():
             pred_objectness_logits_t, pred_class_logits_gt_t = self.model_t(data, is_distill=True)
         #TODO: shape of logits for softmax
-        # valid_masks = gt_objectness_logits_s >= 0
-        # criterion_kd_rpn = self.criterion_kd_rpn(pred_objectness_logits_s[valid_masks], pred_objectness_logits_t[valid_masks], normalizer)
-        criterion_kd_roi_heads = self.criterion_kd_roi_heads(pred_class_logits_gt_s, pred_class_logits_gt_t)
+        valid_masks = gt_objectness_logits_s >= 0
+        criterion_kd_rpn = self.criterion_kd_rpn(pred_objectness_logits_s[valid_masks], pred_objectness_logits_t[valid_masks], normalizer)
+        # criterion_kd_roi_heads = self.criterion_kd_roi_heads(pred_class_logits_gt_s, pred_class_logits_gt_t)
         loss_distill = {
-            # "loss_distill_rpn": criterion_kd_rpn, 
-            "loss_distill_roiheads": criterion_kd_roi_heads
+            "loss_distill_rpn": criterion_kd_rpn, 
+            # "loss_distill_roiheads": criterion_kd_roi_heads
             }
 
         loss_dict = {}
