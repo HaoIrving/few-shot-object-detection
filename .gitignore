@@ -18,6 +18,7 @@ logger-files/
 
 exp/
 checkpoints/
+demo/*.pth
 
 # datasets
 datasets/coco
